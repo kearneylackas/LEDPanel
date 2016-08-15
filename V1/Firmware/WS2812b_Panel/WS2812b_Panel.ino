@@ -19,9 +19,10 @@ CRGB LEDStrip[NUM_STRIPS][NUM_LEDS_PER_STRIP];
 const char* ssid = "K&K (2.4GHz)";
 const char* password = "kearney30";
 
-WiFiServer server(23);
+WiFiServer server(5555);
 WiFiClient serverClients[MAX_SRV_CLIENTS];
 uint8_t buff[BUFFER_SIZE];
+uint8_t displayMode = 1;
 
 /*_______________________________________________________________________________________________*/
 
@@ -35,6 +36,7 @@ unsigned long epoch;
 unsigned long lastNTPSend = 0;
 unsigned long nextNTPSend = 0;
 unsigned long nextNTPRead = 0;
+unsigned long nextEpochPrint = 0;
 bool packetSent;
 
 /*_______________________________________________________________________________________________*/
@@ -196,7 +198,7 @@ int LEDData[NUM_STRIPS * NUM_LEDS_PER_STRIP][5] =
 /*_______________________________________________________________________________________________*/
 
 bool writeReceivedData() {
-  byte red, green, blue;
+  uint8_t red, green, blue;
   int start;
   for (int currentLED = 0; currentLED < NUM_LEDS; currentLED++) {
     start = 3 * currentLED;
@@ -209,6 +211,26 @@ bool writeReceivedData() {
 
     int currentLEDStrip = LEDData[currentLED][0];
     int currentLEDLocal = currentLED % 25;
+
+    bool debug = true;
+    if (debug) {
+      Serial.print("STRIP: ");
+      Serial.print(currentLEDStrip);
+      Serial.print("\t\t");
+      Serial.print("NUMBER: ");
+      Serial.print(currentLEDLocal);
+      Serial.print("\t\t");
+      Serial.print("RED: ");
+      Serial.print(red);
+      Serial.print("\t\t");
+      Serial.print("GREEN: ");
+      Serial.print(green);
+      Serial.print("\t\t");
+      Serial.print("BLUE: ");
+      Serial.print(blue);
+      Serial.println("");
+    }
+
     LEDStrip[currentLEDStrip][currentLEDLocal].setRGB(red, green, blue);
   }
   FastLED.show();
@@ -244,33 +266,21 @@ void radialRainbow(int msDelay) {
     FastLED.show();
     delay(msDelay);
   }
-
-  unsigned long deltaTime = millis() - startTime;
-  unsigned long hertz = 256000. / deltaTime;
-  Serial.print("Refresh Rate: ");
-  Serial.println(hertz);
 }
 
 // send an NTP request to the time server at the given address
 unsigned long sendNTPpacket(IPAddress & address)
 {
-  Serial.println("sending NTP packet...");
-  // set all bytes in the buffer to 0
+  Serial.println("Sending NTP packet...");
   memset(packetBuffer, 0, NTP_PACKET_SIZE);
-  // Initialize values needed to form NTP request
-  // (see URL above for details on the packets)
   packetBuffer[0] = 0b11100011;   // LI, Version, Mode
   packetBuffer[1] = 0;     // Stratum, or type of clock
   packetBuffer[2] = 6;     // Polling Interval
   packetBuffer[3] = 0xEC;  // Peer Clock Precision
-  // 8 bytes of zero for Root Delay & Root Dispersion
   packetBuffer[12]  = 49;
   packetBuffer[13]  = 0x4E;
   packetBuffer[14]  = 49;
   packetBuffer[15]  = 52;
-
-  // all NTP fields have been given values, now
-  // you can send a packet requesting a timestamp:
   udp.beginPacket(address, 123); //NTP requests are to port 123
   udp.write(packetBuffer, NTP_PACKET_SIZE);
   udp.endPacket();
@@ -311,9 +321,9 @@ unsigned long parseNTPPacket() {
   Serial.println(epoch);
 }
 
-bool updateTelnet() {
+uint8_t updateTelnet() {
   uint8_t i, j;
-  bool newData = false;
+  uint8_t headerValue = 0;
   //check if there are any new clients
   if (server.hasClient()) {
     for (i = 0; i < MAX_SRV_CLIENTS; i++) {
@@ -335,14 +345,26 @@ bool updateTelnet() {
     if (serverClients[i] && serverClients[i].connected()) {
       if (serverClients[i].available()) {
         Serial.println(serverClients[i].available());
+        headerValue = serverClients[i].read();
         serverClients[i].read(buff, serverClients[i].available());
-        //while (serverClients[i].available() < 2) delay(1);
-        //serverClients[i].flush();
-        newData = true;
+
+        bool debug = true;
+
+        if (debug) {
+          //for (int f = 0; f < sizeof(buff); f += 3 ) {
+          for (int f = 0; f < BUFFER_SIZE; f += 3 ) {
+            Serial.print(buff[f + 0], DEC);
+            Serial.print(".");
+            Serial.print(buff[f + 1], DEC);
+            Serial.print(".");
+            Serial.print(buff[f + 2], DEC);
+            Serial.println("");
+          }
+        }
       }
     }
   }
-  return newData;
+  return headerValue;
 }
 
 void setup() {
@@ -378,10 +400,6 @@ void setup() {
 }
 
 void loop() {
-  if (updateTelnet()) {
-    writeReceivedData();
-    buff[BUFFER_SIZE] = {};
-  }
 
   if (!packetSent && millis() > nextNTPSend) {
     WiFi.hostByName(ntpServerName, timeServerIP);
@@ -405,8 +423,36 @@ void loop() {
     nextNTPSend = lastNTPSend + 60000;
   }
 
-  printUTCTime(epoch + (millis() - lastNTPSend) / 1000);
+  if (millis() > nextEpochPrint) {
+    printUTCTime(epoch + (millis() - lastNTPSend) / 1000);
+    nextEpochPrint += 5000;
+  }
 
-  radialRainbow(0);
+  uint8_t telnetHeader = updateTelnet();
+
+
+  if (telnetHeader && telnetHeader != displayMode) {
+    displayMode = telnetHeader;
+    Serial.print("Display Mode: ");
+    Serial.println(displayMode, HEX);
+  }
+
+  if (displayMode == 1) {
+    //Serial.print(".");
+    delay(100);
+  }
+
+  if (displayMode == 0xA0) {
+    if (telnetHeader) {
+      writeReceivedData();
+      buff[BUFFER_SIZE] = {};
+    } else {
+      //Serial.print(".");
+      delay(100);
+    }
+  }
+
+  if (displayMode == 0xA1) {
+    radialRainbow(0);
+  }
 }
-
